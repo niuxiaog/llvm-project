@@ -40,6 +40,8 @@ class GreedyRewriteConfig;
 #define GEN_PASS_DECL_SROA
 #define GEN_PASS_DECL_STRIPDEBUGINFO
 #define GEN_PASS_DECL_SCCP
+#define GEN_PASS_DECL_CSA
+#define GEN_PASS_DECL_CST
 #define GEN_PASS_DECL_SYMBOLDCE
 #define GEN_PASS_DECL_SYMBOLPRIVATIZE
 #define GEN_PASS_DECL_TOPOLOGICALSORT
@@ -116,6 +118,9 @@ std::unique_ptr<Pass> createRemoveDeadValuesPass();
 /// Creates a pass which performs sparse conditional constant propagation over
 /// nested operations.
 std::unique_ptr<Pass> createSCCPPass();
+
+std::unique_ptr<Pass> createCSAPass();
+std::unique_ptr<Pass> createCSTPass();
 
 /// Creates a pass which delete symbol operations that are unreachable. This
 /// pass may *only* be scheduled on an operation that defines a SymbolTable.

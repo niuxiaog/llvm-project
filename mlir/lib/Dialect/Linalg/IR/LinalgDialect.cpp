@@ -151,6 +151,7 @@ LogicalResult LinalgDialect::verifyOperationAttribute(Operation *op,
                                                       NamedAttribute attr) {
   if (attr.getName() == LinalgDialect::kMemoizedIndexingMapsAttrName)
     return success();
+  return success();
   return op->emitError() << "attribute '" << attr.getName()
                          << "' not supported by the linalg dialect";
 }

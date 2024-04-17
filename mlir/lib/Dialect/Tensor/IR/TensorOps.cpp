@@ -4153,6 +4153,8 @@ OpFoldResult PackOp::fold(FoldAdaptor adaptor) {
           llvm::dyn_cast_if_present<DenseElementsAttr>(adaptor.getSource()),
           getDestType(), paddingValue))
     return reshapedSource;
+  // TODO: Add ability to process non-splat cases, where we have to access every element
+  // and reorder them.
   return {};
 }
 

@@ -9,6 +9,7 @@ set(LLVM_OPTIONAL_SOURCES
 
   AliasAnalysis/LocalAliasAnalysis.cpp
 
+  DataFlow/ConstantSubgraphAnalysis.cpp
   DataFlow/ConstantPropagationAnalysis.cpp
   DataFlow/DeadCodeAnalysis.cpp
   DataFlow/DenseAnalysis.cpp
@@ -31,6 +32,7 @@ add_mlir_library(MLIRAnalysis
 
   AliasAnalysis/LocalAliasAnalysis.cpp
 
+  DataFlow/ConstantSubgraphAnalysis.cpp
   DataFlow/ConstantPropagationAnalysis.cpp
   DataFlow/DeadCodeAnalysis.cpp
   DataFlow/DenseAnalysis.cpp

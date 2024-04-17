@@ -400,6 +400,22 @@ def SCCP : Pass<"sccp"> {
   let constructor = "mlir::createSCCPPass()";
 }
 
+def CSA : Pass<"csa"> {
+  let summary = "Constant Subgraph Analysis";
+  let description = [{
+    This pass implements a constant subgraph analysis.
+  }];
+  let constructor = "mlir::createCSAPass()";
+}
+
+def CST : Pass<"cst"> {
+  let summary = "Constant Subgraph Transform";
+  let description = [{
+    This pass implements a constant subgraph transform.
+  }];
+  let constructor = "mlir::createCSTPass()";
+}
+
 def SROA : Pass<"sroa"> {
   let summary = "Scalar Replacement of Aggregates";
   let description = [{

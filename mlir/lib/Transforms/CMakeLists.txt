@@ -14,6 +14,8 @@ add_mlir_library(MLIRTransforms
   PrintIR.cpp
   RemoveDeadValues.cpp
   SCCP.cpp
+  CSA.cpp
+  CST.cpp
   SROA.cpp
   StripDebugInfo.cpp
   SymbolDCE.cpp

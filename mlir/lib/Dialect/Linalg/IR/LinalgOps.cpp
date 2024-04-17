@@ -11,7 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
-
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/AsmParser/AsmParser.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -2649,6 +2649,13 @@ void LinalgDialect::getCanonicalizationPatterns(
     RewritePatternSet &results) const {
   results.add<EraseDeadLinalgOp, FoldTensorCastConsumerOp,
               InferStaticShapeOfOperands>(getContext());
+
+  // Add constant folding patterns.
+  ControlFusionFn defaultControlFn = [](OpOperand *fusedOperand) {
+    Operation *producer = fusedOperand->get().getDefiningOp();
+    return producer && producer->hasOneUse();
+  };
+  populateConstantFoldLinalgOperations(results, defaultControlFn);
 }
 
 Operation *LinalgDialect::materializeConstant(OpBuilder &builder,
