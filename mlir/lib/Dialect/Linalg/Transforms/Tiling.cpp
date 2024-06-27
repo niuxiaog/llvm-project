@@ -326,24 +326,24 @@ SmallVector<bool> safeToTileToForall(mlir::MLIRContext *ctx, LinalgOp linalgOp,
   return safeToTile;
 }
 
-/// Rewrite a TilingInterface `op` to a tiled `scf.forall`. The
-/// tiling is specified by the number of tiles/threads `numThreads` and the
+/// Rewrite a TilingInterface `op` to a tiled `scf.forall`. 
+/// The tiling is specified by the number of tiles/threads `numThreads` and the
 /// optional nominal tile size `nominalTileSizes`. If `nominalTilSizes` is
-/// not specified, then  it is derived from `numThreads` as `ceilDiv(dimSize[i],
-/// numThreads[i])`. If non-empty, the `mapping` is added as an
-/// attribute to the resulting `scf.forall`. A zero tile sizes indicate
-/// that the dimension is not tiled, and can be thought of as tiling by the full
-/// size of data.
+/// not specified, then  it is derived from `numThreads` as `ceilDiv(dimSize[i], numThreads[i])`. 
+/// If non-empty, the `mapping` is added as an attribute to the resulting `scf.forall`. 
+/// A zero tile sizes indicate that the dimension is not tiled, and can be thought of as 
+/// tiling by the full size of data.
 /// It is the user's responsibility to ensure that `numThreads` is a valid
 /// tiling specification (i.e. that only tiles parallel dimensions, e.g. in the
 /// Linalg case). If the dimension is not parallelizable, a warning is issued to
-/// notify the user that the generated code is not safe to parallelize. If
-/// `omitTileOffsetBoundsCheck` is true, then the function will assume that
-/// `tileSize[i] * (numThread[i] -1) <= dimSize[i]` holds.
+/// notify the user that the generated code is not safe to parallelize. 
+/// If `omitTileOffsetBoundsCheck` is true, then the function will assume that
+/// `tileSize[i] * (numThread[i] - 1) <= dimSize[i]` holds.
 static FailureOr<ForallTilingResult> tileToForallOpImpl(
     RewriterBase &b, TilingInterface op, ArrayRef<OpFoldResult> numThreads,
     std::optional<ArrayRef<OpFoldResult>> nominalTileSizes,
     std::optional<ArrayAttr> mapping, bool omitTileOffsetBoundsCheck) {
+  llvm::dbgs() << "linalg tileToForallOpImpl on op: " << op << '\n';
   Location loc = op->getLoc();
   OpBuilder::InsertionGuard g(b);
 
@@ -353,11 +353,17 @@ static FailureOr<ForallTilingResult> tileToForallOpImpl(
   auto hasStrideOne = [](Range r) { return !isConstantIntValue(r.stride, 1); };
   if (llvm::any_of(loopRanges, hasStrideOne))
     return op->emitOpError("only stride-1 supported atm");
+  for (auto range : loopRanges) {
+    llvm::dbgs() << "Loop range: " << range.offset << ',' << range.size << ',' << range.stride << '\n';
+  }
 
   // Gather destination tensors.
   SmallVector<Value> dest;
   if (failed(tensor::getOrCreateDestinations(b, loc, op, dest)))
     return op->emitOpError("failed to get destination tensors");
+  for (auto d : dest) {
+    llvm::dbgs() << "Dest: " << d << '\n';
+  }
 
   SmallVector<OpFoldResult> nonZeroNumThreads =
       llvm::to_vector(llvm::make_filter_range(numThreads, [](OpFoldResult ofr) {
@@ -367,6 +373,9 @@ static FailureOr<ForallTilingResult> tileToForallOpImpl(
       llvm::to_vector(llvm::map_range(nonZeroNumThreads, [&](OpFoldResult ofr) {
         return getValueOrCreateConstantIndexOp(b, loc, ofr);
       }));
+  for (auto d : materializedNonZeroNumThreads) {
+    llvm::dbgs() << "materializedNonZeroNumThreads: " << d << '\n';
+  }
 
   LinalgOp linalgOp = dyn_cast<LinalgOp>(op.getOperation());
   if (linalgOp) {
@@ -383,12 +392,19 @@ static FailureOr<ForallTilingResult> tileToForallOpImpl(
   // manually move the insertion point to the body below.
   scf::ForallOp forallOp = b.create<scf::ForallOp>(
       loc, getAsOpFoldResult((materializedNonZeroNumThreads)), dest, mapping);
+  llvm::dbgs() << "Build forall op: " << forallOp << '\n';
 
   // 2. Fill out the ForallOp body.
   SmallVector<OpFoldResult> tiledOffsets, tiledSizes;
   calculateTileOffsetsAndSizes(b, loc, forallOp, numThreads, loopRanges,
                                omitTileOffsetBoundsCheck, nominalTileSizes,
                                tiledOffsets, tiledSizes);
+  for (auto d : tiledOffsets) {
+    llvm::dbgs() << "tiledOffsets: " << d << '\n';
+  }
+  for (auto d : tiledSizes) {
+    llvm::dbgs() << "tiledSizes: " << d << '\n';
+  }
 
   // 3. Clone the tileable op and update its destination operands to use the
   // output bbArgs of the ForallOp.
@@ -413,6 +429,7 @@ static FailureOr<ForallTilingResult> tileToForallOpImpl(
         }
       }
     }
+    llvm::dbgs() << "clonedOp: " << *clonedOp << '\n';
 
     // 4. Tile the cloned op and delete the clone.
     FailureOr<TilingResult> tilingResult =
@@ -427,6 +444,7 @@ static FailureOr<ForallTilingResult> tileToForallOpImpl(
 
     b.eraseOp(clonedOp);
     tiledOp = tilingResult->tiledOps.front();
+    llvm::dbgs() << "tiledOp: " << *tiledOp << '\n';
     tiledValues = tilingResult->tiledValues;
   }
 

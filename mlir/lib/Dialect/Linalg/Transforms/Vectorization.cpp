@@ -248,15 +248,15 @@ private:
 
   // Holds the compile-time static sizes of the iteration space to vectorize.
   // Dynamic dimensions are represented using ShapedType::kDynamic.
-  SmallVector<int64_t> iterSpaceStaticSizes;
+  SmallVector<int64_t> iterSpaceStaticSizes; // 各个轴的长度
 
   /// Holds the value sizes of the iteration space to vectorize. Static
   /// dimensions are represented by 'arith.constant' and dynamic
   /// dimensions by 'tensor/memref.dim'.
-  SmallVector<Value> iterSpaceValueSizes;
+  SmallVector<Value> iterSpaceValueSizes; // 由各个轴的长度构造的 ConstantIndexOp Value
 
   /// Holds the canonical vector shape used to vectorize the iteration space.
-  SmallVector<int64_t> canonicalVecShape;
+  SmallVector<int64_t> canonicalVecShape; // 各个轴上用来 vectorize 的大小
 
   /// Holds the vector dimensions that are scalable in the canonical vector
   /// shape.
@@ -271,6 +271,7 @@ private:
   OpBuilder::InsertionGuard rewriterGuard;
 };
 
+// 根据 vector<int64_t> iterSpaceStaticSizes 构造 vector<Value> iterSpaceValueSizes.
 LogicalResult
 VectorizationState::precomputeIterSpaceValueSizes(RewriterBase &rewriter,
                                                   LinalgOp linalgOp) {
@@ -1135,8 +1136,10 @@ static Operation *reduceIfNeeded(OpBuilder &b, LinalgOp linalgOp, Operation *op,
                                  const IRMapping &bvm) {
   Value reduceVec = bvm.lookup(reduceValue);
   Value outputVec = bvm.lookup(initialValue);
+  LDBG("reduced value: " << reduceVec << ", output value: " << outputVec);
   auto reduceType = dyn_cast<VectorType>(reduceVec.getType());
   auto outputType = dyn_cast<VectorType>(outputVec.getType());
+  LDBG("reduced type: " << reduceType << ", output type: " << outputType);
   // Reduce only if needed as the value may already have been reduce for
   // contraction vectorization.
   if (!reduceType ||
@@ -1155,13 +1158,22 @@ static Operation *reduceIfNeeded(OpBuilder &b, LinalgOp linalgOp, Operation *op,
 ///   constant needs to be broadcast to.
 ///   3. Fail on any remaining non `ElementwiseMappable` op. It is the purpose
 ///   of the `customVectorizationHooks` to cover such cases.
-///   4. Clone `op` in vector form to a vector of shape prescribed by the first
+///   4. Check if the `op` is a reduction by calling `matchReduction()`: 
+///   for example, the block of a matmul op:
+///       ^bb0(%arg3: f32, %arg4: f32, %arg5: f32):
+///         %1 = arith.mulf %arg3, %arg4 : f32
+///         %2 = arith.addf %arg5, %1 : f32
+///         linalg.yield %2 : f32
+///   %arg5 is an iterCarriedArg and an operand to arith.addf, and the result of
+///   arith.addf is an operand to linalg.yield. So arith.addf is a reduction. A
+///   vector::MultiDimReductionOp will be built and replace arith.addf.
+///   5. For other ops, clone `op` in vector form to a vector of shape prescribed by the first
 ///   operand of maximal rank. Other operands have smaller rank and are
 ///   broadcast accordingly. It is assumed this broadcast is always legal,
 ///   otherwise, it means one of the `customVectorizationHooks` is incorrect.
 ///
 /// This function assumes all operands of `op` have been vectorized and are in
-/// the `bvm` mapping. As a consequence, this function is meant to be called  on
+/// the `bvm` mapping. As a consequence, this function is meant to be called on
 /// a topologically-sorted list of ops.
 /// This function does not update `bvm` but returns a VectorizationStatus that
 /// instructs the caller what `bvm` update needs to occur.
@@ -1169,7 +1181,7 @@ static VectorizationResult
 vectorizeOneOp(RewriterBase &rewriter, VectorizationState &state,
                LinalgOp linalgOp, Operation *op, const IRMapping &bvm,
                ArrayRef<CustomVectorizationHook> customVectorizationHooks) {
-  LDBG("vectorize op " << *op << "\n");
+  LDBG("vectorize one op " << *op << "\n");
 
   // 1. Try to apply any CustomVectorizationHook.
   if (!customVectorizationHooks.empty()) {
@@ -1193,14 +1205,17 @@ vectorizeOneOp(RewriterBase &rewriter, VectorizationState &state,
   // 4 . Check if the operation is a reduction.
   SmallVector<std::pair<Value, Value>> reductionOperands;
   for (Value operand : op->getOperands()) {
+    LDBG("Find reduction: Operand: " << operand);
     auto blockArg = dyn_cast<BlockArgument>(operand);
     if (!blockArg || blockArg.getOwner() != linalgOp.getBlock() ||
-        blockArg.getArgNumber() < linalgOp.getNumDpsInputs())
+        blockArg.getArgNumber() < linalgOp.getNumDpsInputs()/* this blockArg is an output */)
       continue;
     SmallVector<Operation *> reductionOps;
+    // reduceValue: the value being reduced. blockArg: the initial value of reduce result.
     Value reduceValue = matchReduction(
-        linalgOp.getRegionOutputArgs(),
-        blockArg.getArgNumber() - linalgOp.getNumDpsInputs(), reductionOps);
+        linalgOp.getRegionOutputArgs(), // getRegionOutputArgs: Return the output block arguments of the region
+        blockArg.getArgNumber() - linalgOp.getNumDpsInputs(), // pos of the potential reduction arg in getRegionOutputArgs()
+        reductionOps);
     if (!reduceValue)
       continue;
     reductionOperands.push_back(std::make_pair(reduceValue, operand));
@@ -1250,6 +1265,7 @@ vectorizeOneOp(RewriterBase &rewriter, VectorizationState &state,
                               firstMaxRankedType.getScalableDims())
             : resultType);
   }
+  LDBG("vectorize op name: " << op->getName() << ", identifier: " << op->getName().getIdentifier() << "\n");
   //   d. Build and return the new op.
   return VectorizationResult{
       VectorizationStatus::NewOp,
@@ -1262,13 +1278,15 @@ vectorizeOneOp(RewriterBase &rewriter, VectorizationState &state,
 ///   1. Verify the `linalgOp` has one non-empty region.
 ///   2. Values defined above the region are mapped to themselves and will be
 ///   broadcasted on a per-need basis by their consumers.
-///   3. Each region argument is vectorized into a vector.transfer_read (or 0-d
-///   load).
+///   3. Each region argument is vectorized into a vector.transfer_read (or 0-d load).
 ///   TODO: Reuse opportunities for RAR dependencies.
-///   4a. Register CustomVectorizationHook for YieldOp to capture the results.
-///   4rewriter. Register CustomVectorizationHook for IndexOp to access the
-///   iteration indices.
+///   4. Vectorize special ops using CustomVectorizationHooks:
+///     4a. Register CustomVectorizationHook for YieldOp to capture the results.
+///     4b. Register CustomVectorizationHook for IndexOp to access the iteration indices.
+///     4c. Register CustomVectorizationHook for ExtractOp.
 ///   5. Iteratively call vectorizeOneOp on the region operations.
+///     5a. Process ConstantOp specially.
+///     5b. Now only ElementwiseMappable ops exists. Process them.
 ///
 /// When `broadcastToMaximalCommonShape` is set to true, eager broadcasting is
 /// performed to the maximal common vector size implied by the `linalgOp`
@@ -1283,12 +1301,14 @@ static LogicalResult
 vectorizeAsLinalgGeneric(RewriterBase &rewriter, VectorizationState &state,
                          LinalgOp linalgOp,
                          SmallVectorImpl<Value> &newResults) {
-  LDBG("Vectorizing operation as linalg generic\n");
+  LDBG("Vectorizing operation as linalg generic:\n" << linalgOp << '\n');
   Block *block = linalgOp.getBlock();
+  block->print(llvm::dbgs());
+  llvm::dbgs() << '\n';
 
   // 2. Values defined above the region can only be broadcast for now. Make them
   // map to themselves.
-  IRMapping bvm;
+  IRMapping bvm; // DenseMap<Value, Value>
   SetVector<Value> valuesSet;
   mlir::getUsedValuesDefinedAbove(linalgOp->getRegion(0), valuesSet);
   bvm.map(valuesSet.getArrayRef(), valuesSet.getArrayRef());
@@ -1299,15 +1319,17 @@ vectorizeAsLinalgGeneric(RewriterBase &rewriter, VectorizationState &state,
   // 3. Turn all BBArgs into vector.transfer_read / load.
   Location loc = linalgOp.getLoc();
   Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  // getOpOperandsMatchingBBargs: Return op operands that have a corresponding argument in the basic block.
   for (OpOperand *opOperand : linalgOp.getOpOperandsMatchingBBargs()) {
+    //getMatchingBlockArgument: Return the block argument for an `opOperand`.
     BlockArgument bbarg = linalgOp.getMatchingBlockArgument(opOperand);
     if (linalgOp.isScalar(opOperand)) {
       bvm.map(bbarg, opOperand->get());
       continue;
     }
 
-    // 3.a. Convert the indexing map for this input/output to a transfer read
-    // permutation map and masking map.
+    // 3.a. Convert the indexing map for this input/output to a transfer read permutation map and masking map.
+    // getMatchingIndexingMap: Return the input or output indexing map for `opOperand`.
     AffineMap indexingMap = linalgOp.getMatchingIndexingMap(opOperand);
 
     // Remove zeros from indexing map to use it as masking map.
@@ -1335,6 +1357,8 @@ vectorizeAsLinalgGeneric(RewriterBase &rewriter, VectorizationState &state,
       readType =
           state.getCanonicalVecType(elemType, readMap.compose(indexingMap));
     }
+    llvm::dbgs() << "Operand Read map: " << readMap << '\n';
+    LDBG("ReadType: " << readType << '\n');
 
     SmallVector<Value> indices(linalgOp.getShape(opOperand).size(), zero);
 
@@ -1363,21 +1387,21 @@ vectorizeAsLinalgGeneric(RewriterBase &rewriter, VectorizationState &state,
   }
 
   SmallVector<CustomVectorizationHook> hooks;
-  // 4a. Register CustomVectorizationHook for yieldOp.
+  // 4a. Register CustomVectorizationHook for linalg::YieldOp.
   CustomVectorizationHook vectorizeYield =
       [&](Operation *op, const IRMapping &bvm) -> VectorizationResult {
     return vectorizeLinalgYield(rewriter, op, bvm, state, linalgOp, newResults);
   };
   hooks.push_back(vectorizeYield);
 
-  // 4b. Register CustomVectorizationHook for indexOp.
+  // 4b. Register CustomVectorizationHook for linalg::IndexOp.
   CustomVectorizationHook vectorizeIndex =
       [&](Operation *op, const IRMapping &bvm) -> VectorizationResult {
     return vectorizeLinalgIndex(rewriter, state, op, linalgOp);
   };
   hooks.push_back(vectorizeIndex);
 
-  // 4c. Register CustomVectorizationHook for extractOp.
+  // 4c. Register CustomVectorizationHook for tensor::ExtractOp.
   CustomVectorizationHook vectorizeExtract =
       [&](Operation *op, const IRMapping &bvm) -> VectorizationResult {
     return vectorizeTensorExtract(rewriter, state, op, linalgOp, bvm);
@@ -2063,8 +2087,7 @@ LogicalResult mlir::linalg::vectorize(RewriterBase &rewriter, Operation *op,
       TypeSwitch<Operation *, LogicalResult>(op)
           .Case<linalg::LinalgOp>([&](auto linalgOp) {
             // TODO: isaConvolutionOpInterface that can also infer from
-            // generic features. Will require stride/dilation attributes
-            // inference.
+            // generic features. Will require stride/dilation attributes inference.
             if (isa<ConvolutionOpInterface>(linalgOp.getOperation())) {
               FailureOr<Operation *> convOr = vectorizeConvolution(
                   rewriter, linalgOp, inputVectorSizes, inputScalableVecDims,
@@ -2078,8 +2101,7 @@ LogicalResult mlir::linalg::vectorize(RewriterBase &rewriter, Operation *op,
               return failure();
             }
 
-            LDBG("Vectorize generic by broadcasting to the canonical vector "
-                 "shape\n");
+            LDBG("Vectorize generic by broadcasting to the canonical vector shape\n");
 
             // Pre-process before proceeding.
             convertAffineApply(rewriter, linalgOp);
@@ -2092,16 +2114,13 @@ LogicalResult mlir::linalg::vectorize(RewriterBase &rewriter, Operation *op,
             return vectorizeAsLinalgGeneric(rewriter, state, linalgOp, results);
           })
           .Case<tensor::PadOp>([&](auto padOp) {
-            return vectorizeAsTensorPadOp(rewriter, padOp, inputVectorSizes,
-                                          results);
+            return vectorizeAsTensorPadOp(rewriter, padOp, inputVectorSizes, results);
           })
           .Case<tensor::PackOp>([&](auto packOp) {
-            return vectorizeAsTensorPackOp(rewriter, packOp, inputVectorSizes,
-                                           results);
+            return vectorizeAsTensorPackOp(rewriter, packOp, inputVectorSizes, results);
           })
           .Case<tensor::UnPackOp>([&](auto unpackOp) {
-            return vectorizeAsTensorUnpackOp(rewriter, unpackOp,
-                                             inputVectorSizes, results);
+            return vectorizeAsTensorUnpackOp(rewriter, unpackOp, inputVectorSizes, results);
           })
           .Default([](auto) { return failure(); });
 

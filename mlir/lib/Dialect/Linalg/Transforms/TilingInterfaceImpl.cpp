@@ -119,9 +119,13 @@ struct LinalgOpTilingInterface
     // specified could lead to out of bounds accesses.
     Location loc = op->getLoc();
     LinalgOp linalgOp = cast<LinalgOp>(op);
+    llvm::dbgs() << "LinalgOpTilingInterface::getTiledImplementation for op: " << linalgOp << '\n';
     SmallVector<Value> valuesToTile = linalgOp->getOperands();
     SmallVector<Value, 4> tiledOperands = makeTiledShapes(
         b, loc, linalgOp, valuesToTile, offsets, sizes, {}, true);
+    for (auto o : tiledOperands) {
+      llvm::dbgs() << "tiled operand:\n" << o << '\n';
+    }
 
     SmallVector<Type> resultTensorTypes =
         getTensorOutputTypes(linalgOp, tiledOperands);

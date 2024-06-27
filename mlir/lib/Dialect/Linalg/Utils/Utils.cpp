@@ -841,8 +841,11 @@ SmallVector<Value> makeTiledShapes(OpBuilder &builder, Location loc,
     std::optional<SliceParameters> sliceParams = std::get<1>(item);
     tiledShapes.push_back(
         sliceParams.has_value()
-            ? materializeTiledShape(builder, loc, valueToTile, *sliceParams)
+            ?
+            // build tensor::ExtractSliceOp
+            materializeTiledShape(builder, loc, valueToTile, *sliceParams)
             : valueToTile);
+    llvm::dbgs() << "tiled value: " << tiledShapes.back() << '\n';
   }
   return tiledShapes;
 }

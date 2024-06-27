@@ -2904,6 +2904,7 @@ DiagnosedSilenceableFailure transform::tileToForallOpImpl(
     linalg::ForallTilingResult &tilingResult) {
   // Transform all targets one by one.
   auto tileableOp = dyn_cast<TilingInterface>(target);
+  llvm::dbgs() << "transform::tileToForallOpImpl on op: " << tileableOp << '\n';
   if (!tileableOp) {
     DiagnosedSilenceableFailure diag =
         transformOp.emitSilenceableError()
@@ -2934,7 +2935,7 @@ DiagnosedSilenceableFailure transform::TileUsingForallOp::apply(
     transform::TransformResults &transformResults,
     transform::TransformState &state) {
   auto transformOp = cast<TransformOpInterface>(getOperation());
-
+  llvm::dbgs() << "transform::TileUsingForallOp::apply on op: " << transformOp << '\n';
   // Result payload ops.
   SmallVector<Operation *> tileOps;
   SmallVector<Operation *> tiledOps;

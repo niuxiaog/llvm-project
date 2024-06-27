@@ -792,6 +792,8 @@ AffineMap mlir::inverseAndBroadcastProjectedPermutation(AffineMap map) {
     // Reverse each dimension existing in the original map result.
     exprs[map.getDimPosition(i)] = getAffineDimExpr(i, context);
   }
+  // input: (d0, d1, d2) -> (d0, d2)
+  // output: (d0, d1) -> (d0, 0, d1), reversed (inputs and outputs) and broadcasted
   return AffineMap::get(map.getNumResults(), /*symbolCount=*/0, exprs, context);
 }
 

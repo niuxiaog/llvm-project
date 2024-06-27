@@ -17,6 +17,7 @@
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/Support/Debug.h"
 
 ///
 /// Implements Analysis functions specific to slicing in Function.
@@ -318,6 +319,9 @@ Value mlir::matchReduction(ArrayRef<BlockArgument> iterCarriedArgs,
   // Check that the yielded value is in the same position as in
   // `iterCarriedArgs`.
   Operation *terminatorOp = combinerOp;
+  llvm::dbgs() << "terminator op: " << *terminatorOp << '\n';
+  llvm::dbgs() << "terminator op operand: " << terminatorOp->getOperand(redPos) << '\n';
+  llvm::dbgs() << "combinerOp op result : " << combinerOps.back()->getResults()[0] << '\n';
   if (terminatorOp->getOperand(redPos) != combinerOps.back()->getResults()[0])
     return nullptr;
 
