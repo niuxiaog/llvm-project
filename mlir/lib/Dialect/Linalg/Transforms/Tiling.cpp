@@ -435,6 +435,66 @@ static void calculateTileOffsetsAndSizes(
   }
 }
 
+static void calculateTileOffsetsAndSizes(
+    RewriterBase &b, Location loc, scf::ForOp forOp, OpFoldResult numThread,
+    Range loopRange, bool omitTileOffsetBoundsCheck,
+    std::optional<OpFoldResult> nominalTileSize, OpFoldResult &tiledOffset,
+    OpFoldResult &tiledSize) {
+  OpBuilder::InsertionGuard g(b);
+  b.setInsertionPointToStart(forOp.getBody(0));
+
+  Value threadId = forOp.getInductionVar();
+  bool isZero = isConstantIntValue(numThread, 0);
+  // Degenerate case: take the whole domain.
+  if (isZero) {
+    tiledOffset = loopRange.offset;
+    tiledSize = loopRange.size;
+    return;
+  }
+
+  // Tiled case: compute the offset and size.
+  AffineExpr i, j, m, n, o;
+  // Dimensional identifiers correspond to the dimensions of the underlying
+  // structure being represented; for example, a three-dimensional loop nest has
+  // three dimensional identifiers. Symbol identifiers represent an unknown
+  // quantity that can be treated as constant for a region of interest. For
+  // example, d0/d1 are dimensions, s0 is a symbol: #affine_map2to3 =
+  // affine_map<(d0, d1)[s0] -> (d0, d1 + s0, d1 - s0)>
+  bindDims(b.getContext(), i, j);
+  bindSymbols(b.getContext(), m, n, o);
+  OpFoldResult size = loopRange.size;
+  OpFoldResult offset = loopRange.offset;
+  // Symbolic fixed max size per thread.
+  // TODO: floor + 0/1 depending on case for better load-balancing.
+  OpFoldResult tileSizePerThread =
+      nominalTileSize.has_value()
+          ? (*nominalTileSize)
+          : makeComposedFoldedAffineApply(
+                b, loc, m.ceilDiv(n), ArrayRef<OpFoldResult>{size, numThread});
+
+  // Dynamic offset shifted by threadId * maxSizePerThread.
+  OpFoldResult offsetPerThread = makeComposedFoldedAffineApply(
+      b, loc, i + j * m, {offset, threadId, tileSizePerThread});
+  // Dynamic upper-bound depending on the threadId.
+  OpFoldResult residualTileSize = makeComposedFoldedAffineApply(
+      b, loc, i + j * m - n, {offset, numThread, tileSizePerThread, size});
+  if (!isConstantIntValue(residualTileSize, 0)) {
+    OpFoldResult sizeMinusOffsetPerThread =
+        makeComposedFoldedAffineApply(b, loc, -i + m, {offsetPerThread, size});
+    tileSizePerThread =
+        buildMin(b, loc, {sizeMinusOffsetPerThread, tileSizePerThread});
+  }
+
+  tiledOffset = offsetPerThread;
+  // TODO: if tileSizePerThread <= 0 early exit.
+  if (!omitTileOffsetBoundsCheck &&
+      !canOmitTileOffsetInBoundsCheck(tileSizePerThread, numThread, size))
+    tileSizePerThread =
+        buildMax(b, loc, {b.getIndexAttr(0), tileSizePerThread});
+
+  tiledSize = tileSizePerThread;
+}
+
 /// Returns a vector of bools representing if, for each axis, `op` can be tiled
 /// without incurring in a race condition and thus it is thread-safe to do the
 /// tiling. This is checked by iterating over numThreads and ensuring that the
@@ -455,6 +515,106 @@ SmallVector<bool> safeToTileToForall(mlir::MLIRContext *ctx, LinalgOp linalgOp,
     }
   }
   return safeToTile;
+}
+
+/*
+O = P @ V. shape: (A, C) @ (C, D) -> (A, D).
+Tile on A: block size: Br, row num blocks: Tr.
+Tile on C: block size: Bc, col num blocks: Tc.
+
+O = torch.zeros(A, D)
+for i in range(Tr):
+  Oi = O[i * Br : (i + 1) * Br, :] # (Br, D)
+  for j in range(Tc):
+    Pij = P[i * Br : (i + 1) * Br, j * Bc : (j + 1) * Bc] # (Br, Bc)
+    Vj = V[j * Bc : (j + 1) * Bc, :] # (Bc, D)
+    Oi = Oi + Pij @ Vj # (Br, D), reduce_add
+  O[i * Br : (i + 1) * Br, :] = Oi
+*/
+FailureOr<ForallTilingResult> tileMatmulToForallOpImpl(
+    RewriterBase &b, TilingInterface op, SmallVector<OpFoldResult> numThreads,
+    std::optional<ArrayRef<OpFoldResult>> nominalTileSizes,
+    std::optional<ArrayAttr> mapping, bool omitTileOffsetBoundsCheck) {
+  Location loc = op->getLoc();
+  LinalgOp linalgOp = dyn_cast<LinalgOp>(op.getOperation());
+  linalg::MatmulOp mm = cast<linalg::MatmulOp>(linalgOp);
+
+  SmallVector<Value> dest;
+  tensor::getOrCreateDestinations(b, loc, op, dest);
+  SmallVector<Value> valuesToTile = linalgOp->getOperands();
+
+  // Matmul has 3 loops: M, N, K.
+  SmallVector<Range> loopRanges = op.getIterationDomain(b);
+
+  scf::ForallOp outerForallOp =
+      b.create<scf::ForallOp>(loc, numThreads[0], dest, mapping);
+  ArrayRef<BlockArgument> outerDestBbArgs = outerForallOp.getRegionIterArgs();
+
+  SmallVector<OpFoldResult> rowTiledOffsets, rowTiledSizes;
+  calculateTileOffsetsAndSizes(b, loc, outerForallOp, {numThreads[0]},
+                               {loopRanges[0]}, omitTileOffsetBoundsCheck,
+                               std::nullopt, rowTiledOffsets, rowTiledSizes);
+
+  SliceParameters outSliceParam;
+  outSliceParam.offsets = {rowTiledOffsets[0], b.getIndexAttr(0)};
+  outSliceParam.sizes = {rowTiledSizes[0], loopRanges[1].size};
+  outSliceParam.strides = {b.getIndexAttr(1), b.getIndexAttr(1)};
+  OpBuilder::InsertionGuard g(b);
+  b.setInsertionPoint(outerForallOp.getTerminator());
+  Value outputSlice = b.create<tensor::ExtractSliceOp>(
+      loc, outerDestBbArgs[0], outSliceParam.offsets, outSliceParam.sizes,
+      outSliceParam.strides);
+  TensorType tt = dyn_cast<TensorType>(outputSlice.getType());
+
+  SmallVector<Value> innerOutputs = {outputSlice};
+  // scf::ForallOp innerForallOp = b.create<scf::ForallOp>(loc, numThreads[1],
+  // innerOutputs, mapping);
+  // b.setInsertionPointToStart(innerForallOp.getBody(0));
+  auto lb = b.create<arith::ConstantIndexOp>(loc, 0);
+  auto ub = b.create<arith::ConstantIndexOp>(
+      loc, cast<IntegerAttr>(dyn_cast<Attribute>(numThreads[1])).getInt());
+  auto step = b.create<arith::ConstantIndexOp>(loc, 1);
+  scf::ForOp innerForOp = b.create<scf::ForOp>(loc, lb, ub, step, innerOutputs);
+  ArrayRef<BlockArgument> innerDestBbArgs = innerForOp.getRegionIterArgs();
+
+  OpFoldResult colTiledOffset, colTiledSize;
+  calculateTileOffsetsAndSizes(b, loc, innerForOp, numThreads[1], loopRanges[2],
+                               omitTileOffsetBoundsCheck, std::nullopt,
+                               colTiledOffset, colTiledSize);
+
+  b.setInsertionPointToEnd(innerForOp.getBody());
+
+  SliceParameters lhsSliceParam;
+  lhsSliceParam.offsets = {rowTiledOffsets[0], colTiledOffset};
+  lhsSliceParam.sizes = {rowTiledSizes[0], colTiledSize};
+  lhsSliceParam.strides = {b.getIndexAttr(1), b.getIndexAttr(1)};
+  Value lhs = b.create<tensor::ExtractSliceOp>(
+      loc, valuesToTile[0], lhsSliceParam.offsets, lhsSliceParam.sizes,
+      lhsSliceParam.strides);
+
+  SliceParameters rhsSliceParam;
+  rhsSliceParam.offsets = {colTiledOffset, b.getIndexAttr(0)};
+  rhsSliceParam.sizes = {colTiledSize, loopRanges[1].size};
+  rhsSliceParam.strides = {b.getIndexAttr(1), b.getIndexAttr(1)};
+  Value rhs = b.create<tensor::ExtractSliceOp>(
+      loc, valuesToTile[1], rhsSliceParam.offsets, rhsSliceParam.sizes,
+      rhsSliceParam.strides);
+
+  // auto empty = b.create<tensor::EmptyOp>(
+  //       loc, tt.getShape(), tt.getElementType());
+  Operation *clonedMM = b.clone(*op.getOperation());
+  clonedMM->setOperands(0, 3, {lhs, rhs, innerDestBbArgs[0]});
+  clonedMM->getResult(0).setType(tt);
+
+  b.create<scf::YieldOp>(loc, clonedMM->getResults());
+
+  b.setInsertionPointToEnd(outerForallOp.getTerminator().getBody());
+  b.create<tensor::ParallelInsertSliceOp>(
+      loc, innerForOp->getResults()[0], outerDestBbArgs[0],
+      outSliceParam.offsets, outSliceParam.sizes, outSliceParam.strides);
+  llvm::dbgs() << "MM outer loop: " << outerForallOp << '\n';
+  Operation *tiledOp = clonedMM;
+  return ForallTilingResult{outerForallOp, tiledOp};
 }
 
 /// Rewrite a TilingInterface `op` to a tiled `scf.forall`. The
@@ -507,6 +667,16 @@ static FailureOr<ForallTilingResult> tileToForallOpImpl(
     for (size_t i = 0; i < tilingSafety.size(); i++)
       if (!tilingSafety[i])
         op.emitWarning() << "tiling is not thread safe at axis #" << i;
+  }
+
+  if (auto mm = cast<linalg::MatmulOp>(linalgOp)) {
+    if (auto attr = op->getAttr("matmul_special_tiling")) {
+      if (cast<BoolAttr>(attr).getValue() == true) {
+        return tileMatmulToForallOpImpl(
+          b, op, getAsOpFoldResult((materializedNonZeroNumThreads)),
+          nominalTileSizes, mapping, omitTileOffsetBoundsCheck);
+      }
+    }
   }
 
   // 1. Create the ForallOp. We don't use the lambda body-builder
