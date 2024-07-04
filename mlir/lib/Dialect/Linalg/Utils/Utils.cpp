@@ -858,6 +858,8 @@ void offsetIndices(OpBuilder &b, LinalgOp linalgOp,
 
 void offsetIndices(RewriterBase &b, LinalgOp linalgOp,
                    ArrayRef<OpFoldResult> offsets) {
+  // Whether the op accesses the iteration indices, i.e.,
+  // there is an IndexOp in its body.
   if (!linalgOp.hasIndexSemantics())
     return;
 
@@ -868,6 +870,7 @@ void offsetIndices(RewriterBase &b, LinalgOp linalgOp,
     b.setInsertionPointAfter(indexOp);
     AffineExpr index, offset;
     bindDims(b.getContext(), index, offset);
+    // add offset to index
     OpFoldResult applied = makeComposedFoldedAffineApply(
         b, indexOp.getLoc(), index + offset,
         {getAsOpFoldResult(indexOp.getResult()), offsets[indexOp.getDim()]});

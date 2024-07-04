@@ -120,6 +120,7 @@ struct LinalgOpTilingInterface
     Location loc = op->getLoc();
     LinalgOp linalgOp = cast<LinalgOp>(op);
     llvm::dbgs() << "LinalgOpTilingInterface::getTiledImplementation for op: " << linalgOp << '\n';
+    // including dpsInits operands
     SmallVector<Value> valuesToTile = linalgOp->getOperands();
     SmallVector<Value, 4> tiledOperands = makeTiledShapes(
         b, loc, linalgOp, valuesToTile, offsets, sizes, {}, true);
@@ -127,6 +128,7 @@ struct LinalgOpTilingInterface
       llvm::dbgs() << "tiled operand:\n" << o << '\n';
     }
 
+    // get the types of dpsInits operands
     SmallVector<Type> resultTensorTypes =
         getTensorOutputTypes(linalgOp, tiledOperands);
 

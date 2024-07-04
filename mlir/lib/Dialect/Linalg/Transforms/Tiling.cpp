@@ -243,6 +243,7 @@ static void calculateTileOffsetsAndSizes(
   OpBuilder::InsertionGuard g(b);
   b.setInsertionPointToStart(forallOp.getBody(0));
 
+  // threadId is a <block argument> of type 'index'.
   ValueRange threadIds = forallOp.getInductionVars();
   SmallVector<OpFoldResult> nonZeroNumThreads =
       llvm::to_vector(llvm::make_filter_range(numThreads, [](OpFoldResult ofr) {
@@ -276,8 +277,9 @@ static void calculateTileOffsetsAndSizes(
             : makeComposedFoldedAffineApply(
                   b, loc, m.ceilDiv(n),
                   ArrayRef<OpFoldResult>{size, nonZeroNumThreads[threadIdIdx]});
-
+    // tile size = loop_range_size / num_threads
     // Dynamic offset shifted by threadId * maxSizePerThread.
+    // tile offset = loop_offset + loop_idx * tile_size
     OpFoldResult offsetPerThread = makeComposedFoldedAffineApply(
         b, loc, i + j * m, {offset, threadId, tileSizePerThread});
     // Dynamic upper-bound depending on the threadId.
