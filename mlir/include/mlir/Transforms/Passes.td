@@ -577,4 +577,14 @@ def CompositeFixedPointPass : Pass<"composite-fixed-point-pass"> {
   ];
 }
 
+def MatmulSpecialTileAndFuse : Pass<"matmul-special-tile-and-fuse"> {
+  let summary = "Find two consecutive matmuls, tile them and fuse them.";
+  let description = [{
+    Find two consecutive matmuls, tile them and fuse them.
+  }];
+
+  let constructor = "mlir::createMatmulSpecialTileAndFusePass()";
+  let dependentDialects = ["scf::SCFDialect", "linalg::LinalgDialect", "tensor::TensorDialect"];
+}
+
 #endif // MLIR_TRANSFORMS_PASSES

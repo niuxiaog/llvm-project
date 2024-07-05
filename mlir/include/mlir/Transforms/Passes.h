@@ -45,6 +45,7 @@ class GreedyRewriteConfig;
 #define GEN_PASS_DECL_SYMBOLPRIVATIZE
 #define GEN_PASS_DECL_TOPOLOGICALSORT
 #define GEN_PASS_DECL_COMPOSITEFIXEDPOINTPASS
+#define GEN_PASS_DECL_MATMULSPECIALTILEANDFUSE
 #include "mlir/Transforms/Passes.h.inc"
 
 /// Creates an instance of the Canonicalizer pass, configured with default
@@ -137,6 +138,9 @@ std::unique_ptr<Pass> createTopologicalSortPass();
 std::unique_ptr<Pass> createCompositeFixedPointPass(
     std::string name, llvm::function_ref<void(OpPassManager &)> populateFunc,
     int maxIterations = 10);
+
+/// Creates a pass that finds two consecutive matmuls, tiles them and fuses them.
+std::unique_ptr<Pass> createMatmulSpecialTileAndFusePass();
 
 //===----------------------------------------------------------------------===//
 // Registration

@@ -20,6 +20,7 @@ add_mlir_library(MLIRTransforms
   SymbolPrivatize.cpp
   TopologicalSort.cpp
   ViewOpGraph.cpp
+  MatmulSpecialTileAndFuse.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Transforms
@@ -28,6 +29,7 @@ add_mlir_library(MLIRTransforms
   MLIRTransformsPassIncGen
 
   LINK_LIBS PUBLIC
+  # MLIRLinalgTransforms
   MLIRAnalysis
   MLIRCopyOpInterface
   MLIRFunctionInterfaces
