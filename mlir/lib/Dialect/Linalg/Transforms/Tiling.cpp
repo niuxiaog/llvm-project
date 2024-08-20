@@ -466,21 +466,26 @@ static void calculateTileOffsetsAndSizes(
   OpFoldResult offset = loopRange.offset;
   // Symbolic fixed max size per thread.
   // TODO: floor + 0/1 depending on case for better load-balancing.
+  // tileSizePerThread = ceilDiv(size, numThread). E.g., size=10, numThread=3, then tileSizePerThread=4
   OpFoldResult tileSizePerThread =
       nominalTileSize.has_value()
           ? (*nominalTileSize)
           : makeComposedFoldedAffineApply(
                 b, loc, m.ceilDiv(n), ArrayRef<OpFoldResult>{size, numThread});
 
-  // Dynamic offset shifted by threadId * maxSizePerThread.
+  // offsetPerThread = loopRange.offset + threadId * tileSizePerThread. E.g., 0 + threadId * 4
   OpFoldResult offsetPerThread = makeComposedFoldedAffineApply(
       b, loc, i + j * m, {offset, threadId, tileSizePerThread});
   // Dynamic upper-bound depending on the threadId.
+  // E.g., residualTileSize = 0 + 3 * 4 - 10 = 2
   OpFoldResult residualTileSize = makeComposedFoldedAffineApply(
       b, loc, i + j * m - n, {offset, numThread, tileSizePerThread, size});
   if (!isConstantIntValue(residualTileSize, 0)) {
+    // non divisible case.
+    // sizeMinusOffsetPerThread = 10 - 4 * threadId
     OpFoldResult sizeMinusOffsetPerThread =
         makeComposedFoldedAffineApply(b, loc, -i + m, {offsetPerThread, size});
+    // tileSizePerThread = min(10 - 4 * threadId, 4). When threadId is 2, tileSize will be 2, otherwise 4.
     tileSizePerThread =
         buildMin(b, loc, {sizeMinusOffsetPerThread, tileSizePerThread});
   }
@@ -542,12 +547,16 @@ FailureOr<ForallTilingResult> tileMatmulToForallOpImpl(
   SmallVector<Value> dest;
   tensor::getOrCreateDestinations(b, loc, op, dest);
   SmallVector<Value> valuesToTile = linalgOp->getOperands();
+  for (auto &v : valuesToTile) {
+    llvm::dbgs() << "Value to tile: " << v << '\n';
+  }
 
   // Matmul has 3 loops: M, N, K.
   SmallVector<Range> loopRanges = op.getIterationDomain(b);
 
   scf::ForallOp outerForallOp =
       b.create<scf::ForallOp>(loc, numThreads[0], dest, mapping);
+  llvm::dbgs() << "Initial outer forall loop:\n" << outerForallOp << '\n';
   ArrayRef<BlockArgument> outerDestBbArgs = outerForallOp.getRegionIterArgs();
 
   SmallVector<OpFoldResult> rowTiledOffsets, rowTiledSizes;
@@ -555,6 +564,8 @@ FailureOr<ForallTilingResult> tileMatmulToForallOpImpl(
                                {loopRanges[0]}, omitTileOffsetBoundsCheck,
                                std::nullopt, rowTiledOffsets, rowTiledSizes);
 
+  llvm::dbgs() << "outer loop slice row offset: " << rowTiledOffsets[0] << '\n';
+  llvm::dbgs() << "outer loop slice row size: " << rowTiledSizes[0] << '\n';
   SliceParameters outSliceParam;
   outSliceParam.offsets = {rowTiledOffsets[0], b.getIndexAttr(0)};
   outSliceParam.sizes = {rowTiledSizes[0], loopRanges[1].size};
@@ -564,6 +575,7 @@ FailureOr<ForallTilingResult> tileMatmulToForallOpImpl(
   Value outputSlice = b.create<tensor::ExtractSliceOp>(
       loc, outerDestBbArgs[0], outSliceParam.offsets, outSliceParam.sizes,
       outSliceParam.strides);
+  llvm::dbgs() << "output slice:\n" << outputSlice << '\n';
   TensorType tt = dyn_cast<TensorType>(outputSlice.getType());
 
   SmallVector<Value> innerOutputs = {outputSlice};
@@ -575,13 +587,15 @@ FailureOr<ForallTilingResult> tileMatmulToForallOpImpl(
       loc, cast<IntegerAttr>(dyn_cast<Attribute>(numThreads[1])).getInt());
   auto step = b.create<arith::ConstantIndexOp>(loc, 1);
   scf::ForOp innerForOp = b.create<scf::ForOp>(loc, lb, ub, step, innerOutputs);
+  llvm::dbgs() << "Initial inner for loop:\n" << innerForOp << '\n';
   ArrayRef<BlockArgument> innerDestBbArgs = innerForOp.getRegionIterArgs();
 
   OpFoldResult colTiledOffset, colTiledSize;
   calculateTileOffsetsAndSizes(b, loc, innerForOp, numThreads[1], loopRanges[2],
                                omitTileOffsetBoundsCheck, std::nullopt,
                                colTiledOffset, colTiledSize);
-
+  llvm::dbgs() << "inner loop slice col offset: " << colTiledOffset << '\n';
+  llvm::dbgs() << "inner loop slice col size: " << colTiledSize << '\n';
   b.setInsertionPointToEnd(innerForOp.getBody());
 
   SliceParameters lhsSliceParam;
@@ -591,6 +605,7 @@ FailureOr<ForallTilingResult> tileMatmulToForallOpImpl(
   Value lhs = b.create<tensor::ExtractSliceOp>(
       loc, valuesToTile[0], lhsSliceParam.offsets, lhsSliceParam.sizes,
       lhsSliceParam.strides);
+  llvm::dbgs() << "inner lhs slice:\n" << lhs << '\n';
 
   SliceParameters rhsSliceParam;
   rhsSliceParam.offsets = {colTiledOffset, b.getIndexAttr(0)};
@@ -599,6 +614,7 @@ FailureOr<ForallTilingResult> tileMatmulToForallOpImpl(
   Value rhs = b.create<tensor::ExtractSliceOp>(
       loc, valuesToTile[1], rhsSliceParam.offsets, rhsSliceParam.sizes,
       rhsSliceParam.strides);
+  llvm::dbgs() << "inner rhs slice:\n" << rhs << '\n';
 
   // auto empty = b.create<tensor::EmptyOp>(
   //       loc, tt.getShape(), tt.getElementType());
@@ -649,6 +665,9 @@ static FailureOr<ForallTilingResult> tileToForallOpImpl(
   SmallVector<Value> dest;
   if (failed(tensor::getOrCreateDestinations(b, loc, op, dest)))
     return op->emitOpError("failed to get destination tensors");
+  for (auto &v : dest) {
+    llvm::dbgs() << "Dest: " << v << '\n';
+  }
 
   SmallVector<OpFoldResult> nonZeroNumThreads =
       llvm::to_vector(llvm::make_filter_range(numThreads, [](OpFoldResult ofr) {
@@ -658,6 +677,9 @@ static FailureOr<ForallTilingResult> tileToForallOpImpl(
       llvm::to_vector(llvm::map_range(nonZeroNumThreads, [&](OpFoldResult ofr) {
         return getValueOrCreateConstantIndexOp(b, loc, ofr);
       }));
+  for (auto &v : materializedNonZeroNumThreads) {
+    llvm::dbgs() << "materialized NonZero NumThread: " << v << '\n';
+  }
 
   LinalgOp linalgOp = dyn_cast<LinalgOp>(op.getOperation());
   if (linalgOp) {
@@ -684,7 +706,7 @@ static FailureOr<ForallTilingResult> tileToForallOpImpl(
   // manually move the insertion point to the body below.
   scf::ForallOp forallOp = b.create<scf::ForallOp>(
       loc, getAsOpFoldResult((materializedNonZeroNumThreads)), dest, mapping);
-
+  llvm::dbgs() << "forall op: " << forallOp << '\n';
   // 2. Fill out the ForallOp body.
   SmallVector<OpFoldResult> tiledOffsets, tiledSizes;
   calculateTileOffsetsAndSizes(b, loc, forallOp, numThreads, loopRanges,

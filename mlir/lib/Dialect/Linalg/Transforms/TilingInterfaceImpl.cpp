@@ -100,12 +100,23 @@ struct LinalgOpTilingInterface
     LinalgOp linalgOp = cast<LinalgOp>(op);
     SmallVector<OpFoldResult> allShapesSizes =
         linalgOp.createFlatListOfOperandDims(b, loc);
+    llvm::dbgs() << "In getIterationDomain, shape sizes:\n";
+    for (auto &s : allShapesSizes) {
+      llvm::dbgs() << cast<IntegerAttr>(dyn_cast<Attribute>(s)).getInt() << ", ";
+    }
+    llvm::dbgs() << '\n';
     AffineMap map = linalgOp.getShapesToLoopsMap();
+    llvm::dbgs() << "In getIterationDomain, map:\n";
+    map.print(llvm::dbgs());
+    llvm::dbgs() << '\n';
 
     return llvm::to_vector(
         llvm::map_range(map.getResults(), [&](AffineExpr loopExpr) {
           OpFoldResult ofr = affine::makeComposedFoldedAffineApply(
               b, loc, loopExpr, allShapesSizes);
+          llvm::dbgs() << "In getIterationDomain, loopExpr: ";
+          loopExpr.print(llvm::dbgs());
+          llvm::dbgs() << ", range: " << cast<IntegerAttr>(dyn_cast<Attribute>(ofr)).getInt() << '\n';
           return Range{b.getIndexAttr(0), ofr, b.getIndexAttr(1)};
         }));
   }
