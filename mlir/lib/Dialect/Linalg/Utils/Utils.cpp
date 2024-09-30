@@ -804,10 +804,19 @@ SmallVector<Value> makeTiledShapes(OpBuilder &builder, Location loc,
   for (auto item : llvm::zip(valuesToTile, allSliceParameter)) {
     Value valueToTile = std::get<0>(item);
     std::optional<SliceParameters> sliceParams = std::get<1>(item);
+    llvm::dbgs() << "value to tile: " << valueToTile << '\n';
+    llvm::dbgs() << "offsets:\n";
+    llvm::interleaveComma((*sliceParams).offsets, llvm::dbgs());
+    llvm::dbgs() << "\n";
+    llvm::dbgs() << "sizes:\n";
+    llvm::interleaveComma((*sliceParams).sizes, llvm::dbgs());
+    llvm::dbgs() << "\n";
+    llvm::dbgs() << "strides:\n";
+    llvm::interleaveComma((*sliceParams).strides, llvm::dbgs());
+    llvm::dbgs() << "\n";
     tiledShapes.push_back(
         sliceParams.has_value()
-            ? materializeTiledShape(builder, loc, valueToTile, *sliceParams)
-                  ->getResult(0)
+            ? materializeTiledShape(builder, loc, valueToTile, *sliceParams)->getResult(0)
             : valueToTile);
   }
   return tiledShapes;

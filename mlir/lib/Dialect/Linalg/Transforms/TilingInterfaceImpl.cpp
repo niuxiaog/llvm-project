@@ -99,8 +99,12 @@ struct LinalgOpTilingInterface
     Location loc = op->getLoc();
     LinalgOp linalgOp = cast<LinalgOp>(op);
     SmallVector<OpFoldResult> allShapesSizes =
-        linalgOp.createFlatListOfOperandDims(b, loc);
-    AffineMap map = linalgOp.getShapesToLoopsMap();
+        linalgOp.createFlatListOfOperandDims(b, loc); // (M, K, K, N, M, N)
+    llvm::dbgs() << "allShapesSizes:\n";
+    llvm::interleaveComma(allShapesSizes, llvm::dbgs());
+    llvm::dbgs() << "\n";
+    AffineMap map = linalgOp.getShapesToLoopsMap(); // (d0, d1, d2, d3, d4, d5) -> (d0, d3, d1)
+    llvm::dbgs() << "ShapesToLoopsMap: " << map << ", num inputs: " << map.getNumInputs() << ", num outputs: " << map.getNumResults() << "\n";
 
     return llvm::to_vector(
         llvm::map_range(map.getResults(), [&](AffineExpr loopExpr) {
@@ -120,8 +124,14 @@ struct LinalgOpTilingInterface
     Location loc = op->getLoc();
     LinalgOp linalgOp = cast<LinalgOp>(op);
     SmallVector<Value> valuesToTile = linalgOp->getOperands();
+    llvm::dbgs() << "values to tile:\n";
+    llvm::interleaveComma(valuesToTile, llvm::dbgs());
+    llvm::dbgs() << "\n";
     SmallVector<Value> tiledOperands = makeTiledShapes(
         b, loc, linalgOp, valuesToTile, offsets, sizes, {}, true);
+    llvm::dbgs() << "tiledOperands:\n";
+    llvm::interleaveComma(tiledOperands, llvm::dbgs());
+    llvm::dbgs() << "\n";
     SmallVector<Operation *> generatedSlices = llvm::map_to_vector(
         llvm::make_filter_range(
             tiledOperands,
@@ -130,11 +140,24 @@ struct LinalgOpTilingInterface
                   v.getDefiningOp());
             }),
         [](Value v) -> Operation * { return v.getDefiningOp(); });
+    llvm::dbgs() << "generatedSlices:\n";
+    for (auto p : generatedSlices) {
+      p->print(llvm::dbgs());
+      llvm::dbgs() << ", ";
+    }
+    llvm::dbgs() << "\n";
 
     SmallVector<Type> resultTensorTypes =
         getTensorOutputTypes(linalgOp, tiledOperands);
+    llvm::dbgs() << "resultTensorTypes:\n";
+    llvm::interleaveComma(resultTensorTypes, llvm::dbgs());
+    llvm::dbgs() << "\n";
 
+    // on tiled operands, which are produced by tensor.extract_slice ops
     Operation *tiledOp = clone(b, linalgOp, resultTensorTypes, tiledOperands);
+    llvm::dbgs() << "tiledOp:\n";
+    tiledOp->print(llvm::dbgs());
+    llvm::dbgs() << "\n";
     offsetIndices(b, cast<LinalgOp>(tiledOp), offsets);
 
     return TilingResult{
@@ -213,6 +236,9 @@ struct LinalgOpTilingInterface
         llvm::to_vector(llvm::map_range(sizes, [&](OpFoldResult ofr) {
           return affine::makeComposedFoldedAffineApply(b, loc, d0 - 1, ofr);
         }));
+    llvm::dbgs() << "subShapeSizes:\n";
+    llvm::interleaveComma(subShapeSizes, llvm::dbgs());
+    llvm::dbgs() << "\n";
 
     OpOperand *outOperand = linalgOp.getDpsInitOperand(resultNumber);
     SliceParameters sliceParams = computeSliceParameters(
@@ -408,16 +434,21 @@ struct LinalgOpPartialReductionInterface
       // this with a for range loop when we have it.
       AffineMap newMap =
           linalgOp.getMatchingIndexingMap(linalgOp.getDpsInitOperand(idx));
+      llvm::dbgs() << "ori map for init operand: " << newMap << '\n';
       for (int redPos : reductionDims) {
         newMap = newMap.insertResult(b.getAffineDimExpr(redPos),
                                      newMap.getNumResults());
       }
+      llvm::dbgs() << "new map for init operand: " << newMap << '\n';
       newInitMaps.push_back(newMap);
     }
 
     // Step 2a: Extract a slice of the input operands.
     SmallVector<Value> tiledInputs = makeTiledShapes(
         b, loc, linalgOp, linalgOp.getDpsInputs(), offsets, sizes, {}, true);
+    llvm::dbgs() << "tiledInputs:\n";
+    llvm::interleaveComma(tiledInputs, llvm::dbgs());
+    llvm::dbgs() << "\n";
     SmallVector<Operation *> generatedSlices = llvm::map_to_vector(
         llvm::make_filter_range(
             tiledInputs, [](Value v) -> bool { return v.getDefiningOp(); }),
@@ -440,6 +471,9 @@ struct LinalgOpPartialReductionInterface
       tiledInits.push_back(extractSlice);
       generatedSlices.push_back(extractSlice);
     }
+    llvm::dbgs() << "tiledInits:\n";
+    llvm::interleaveComma(tiledInits, llvm::dbgs());
+    llvm::dbgs() << "\n";
 
     // Update the indexing maps.
     SmallVector<AffineMap> newMaps = linalgOp.getIndexingMapsArray();
@@ -477,6 +511,9 @@ struct LinalgOpPartialReductionInterface
                                          ArrayRef<int> reductionDims) const {
     auto linalgOp = cast<LinalgOp>(op);
     SmallVector<int64_t> reductionDimsInt64(reductionDims);
+    llvm::dbgs() << "reduction partialReduce:\n";
+    llvm::interleaveComma(partialReduce, llvm::dbgs());
+    llvm::dbgs() << "\n";
     auto reduction = b.create<linalg::ReduceOp>(
         loc, partialReduce, linalgOp.getDpsInits(), reductionDimsInt64,
         [&linalgOp](OpBuilder &b, Location loc, ValueRange inputs) {

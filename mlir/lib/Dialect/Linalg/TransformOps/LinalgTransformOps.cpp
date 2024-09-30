@@ -3276,10 +3276,12 @@ DiagnosedSilenceableFailure transform::tileToForallOpImpl(
 
   if (mixedNumThreads.empty()) {
     auto generatedForallOp = cast<scf::ForallOp>(tilingResult.loops.front());
+    llvm::dbgs() << "generatedForallOp:\n" << generatedForallOp << '\n';
     OpBuilder::InsertionGuard g(rewriter);
     rewriter.setInsertionPoint(generatedForallOp);
     scf::ForallOp normalizedForallOp =
         normalizeForallLoopOp(rewriter, generatedForallOp);
+    llvm::dbgs() << "normalizedForallOp:\n" << normalizedForallOp << '\n';
     tilingResult.loops.front() = normalizedForallOp;
   }
 
